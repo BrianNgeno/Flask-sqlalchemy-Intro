@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-from flask import Flask, make_response, jsonify, request
+import os
+from flask import Flask, make_response, jsonify, request, session
 from flask_migrate import Migrate
+from flask_bcrypt import Bcrypt
 from models import db, User
 import requests
 from flask_cors import CORS
@@ -8,14 +10,33 @@ from flask_restful import Api, Resource
 from werkzeug.exceptions import NotFound
 
 app = Flask(__name__)
-api = Api(app)
-CORS(app)
-app.config['SQLALCHEMY_DATABASE_URI']='sqlite:///app.db'
-app.config['JSONIFY_PRETTYPRINT_REGULAR']= True
+app.secret_key='qwerty123'
+# development
+# app.config['SQLALCHEMY_DATABASE_URI']='sqlite:///app.db'
+# production
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URI')
 
+app.config['JSONIFY_PRETTYPRINT_REGULAR']= True
 migrate = Migrate(app,db,render_as_batch=True)
 db.init_app(app) 
 
+bcrypt = Bcrypt(app)
+api = Api(app)
+CORS(app)
+
+@app.before_request
+def check_if_logged_in():
+    if not session["user_id"]\
+        and request.endpoint != 'login':
+        return {"error":"unauthorized"},401
+
+
+class CheckSession(Resource):
+    def get(self):
+        if session.get('user_id'):
+            user = User.query.filter(User.id== session["user_id"]).first()
+            return user.to_dict(),200
+        return {'error':"Resource unavailable"}
 
 class Index(Resource):
     def get(self):
@@ -24,8 +45,42 @@ class Index(Resource):
         headers = {}
         return make_response(response_body,status,headers)
         # redirect
-api.add_resource(Index,'/')
 
+
+class Signup(Resource):
+    def post(self):
+        name = request.get_json().get('name')
+        password = request.get_json().get('password')
+
+        if name and password:
+            new_user = User(name=name)
+            new_user.password_hash = password
+
+            db.session.add(new_user)
+            db.session.commit()
+
+            session['user_id']=new_user.id
+            return new_user.to_dict(),201
+
+
+class Login(Resource):
+    def post(self):
+        name = request.get_json().get('name')
+        password = request.get_json().get('password')
+        user =User.query.filter(User.name== name).first()
+        if user and user.authenticate(password):
+            session['user_id']=user.id
+            return user.to_dict(),200
+        else:
+            return {'error':'user or password id not correct!'},401
+
+class Logout(Resource):
+    def delete(self):
+        if session.get('user_id'):
+            session['user_id']=None
+            return {"info":"user logged out successfully"}
+        else:
+            return {"error":"unauthorized"},401
 
 class Users(Resource):
     def get(self):
@@ -58,7 +113,7 @@ class Users(Resource):
 
         return response
 
-api.add_resource(Users, '/users')
+
 
 class UserById(Resource):
     def get(self,id):
@@ -107,7 +162,7 @@ class UserById(Resource):
         return response
 
 
-api.add_resource(UserById,'/users/<int:id>')
+
 
 @app.errorhandler(NotFound)
 def handle_not_found(e):
@@ -116,3 +171,11 @@ def handle_not_found(e):
         404
         )
     return response
+
+api.add_resource(Index,'/', endpoint='landing')
+api.add_resource(Users, '/users', endpoint='user')
+api.add_resource(UserById,'/users/<int:id>', endpoint ='user_id')
+api.add_resource(Signup, '/signup', endpoint = 'signup')
+api.add_resource(Login, '/login', endpoint = 'login')
+api.add_resource(CheckSession, '/session', endpoint = 'check_session')
+api.add_resource(Logout, '/logout', endpoint = 'logout')
